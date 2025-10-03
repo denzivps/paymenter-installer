@@ -11,22 +11,24 @@ RESET="\e[0m"
 log() { echo -e "${BLUE}[INFO]${RESET} $1"; }
 success() { echo -e "${GREEN}[OK]${RESET} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${RESET} $1"; }
+error() { echo -e "${RED}[ERROR]${RESET} $1"; }
 
 # ================= INPUT =================
 echo "Welkom bij de Paymenter installer!"
 echo "-----------------------------------"
 
-read -p "Voer database wachtwoord in voor Paymenter DB: " DB_PASSWORD
-read -p "Voer je domeinnaam in (bijv. paymenter.example.com): " DOMAIN
-read -p "Voer admin voornaam in: " ADMIN_FIRST
-read -p "Voer admin achternaam in: " ADMIN_LAST
-read -p "Voer admin e-mail in: " ADMIN_EMAIL
-read -sp "Voer admin wachtwoord in: " ADMIN_PASS
+read -p "Database wachtwoord voor Paymenter: " DB_PASSWORD
+read -p "Domeinnaam (bijv. paymenter.example.com): " DOMAIN
+read -p "Admin voornaam: " ADMIN_FIRST
+read -p "Admin achternaam: " ADMIN_LAST
+read -p "Admin e-mail: " ADMIN_EMAIL
+read -sp "Admin wachtwoord: " ADMIN_PASS
 echo ""
 
 # ================= DEPENDENCIES =================
 install_dependencies() {
-    log "Dependencies installeren..."
+    log "Installeer dependencies..."
+    apt update
     apt -y install software-properties-common curl apt-transport-https ca-certificates gnupg lsb-release
     LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
     curl -sSL https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | \
@@ -36,30 +38,39 @@ install_dependencies() {
                    mariadb-server nginx tar unzip git redis-server
     curl -sS https://getcomposer.org/installer | \
         sudo php -- --install-dir=/usr/local/bin --filename=composer
-    success "Alle dependencies zijn geïnstalleerd."
+    success "Dependencies geïnstalleerd."
 }
 
 # ================= DATABASE =================
 setup_database() {
     log "Database configureren..."
-    mysql -uroot -e "DROP DATABASE IF EXISTS paymenter;"
-    mysql -uroot -e "CREATE DATABASE paymenter;"
-    mysql -uroot -e "DROP USER IF EXISTS 'paymenter'@'127.0.0.1';"
-    mysql -uroot -e "CREATE USER 'paymenter'@'127.0.0.1' IDENTIFIED BY '${DB_PASSWORD}';"
-    mysql -uroot -e "GRANT ALL PRIVILEGES ON paymenter.* TO 'paymenter'@'127.0.0.1' WITH GRANT OPTION;"
-    success "Database en gebruiker 'paymenter' aangemaakt."
+    if mysql -uroot -e "USE paymenter;" >/dev/null 2>&1; then
+        read -p "Database 'paymenter' bestaat al. Opnieuw maken? (y/N): " choice
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            mysql -uroot -e "DROP DATABASE paymenter;"
+            mysql -uroot -e "CREATE DATABASE paymenter;"
+        else
+            warn "Oude database blijft bestaan."
+        fi
+    else
+        mysql -uroot -e "CREATE DATABASE paymenter;"
+    fi
+
+    mysql -uroot -e "CREATE USER IF NOT EXISTS 'paymenter'@'127.0.0.1' IDENTIFIED BY '${DB_PASSWORD}';"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON paymenter.* TO 'paymenter'@'127.0.0.1';"
+    success "Database ingesteld."
 }
 
-# ================= PAYMENTER INSTALLER =================
+# ================= PAYMENTER INSTALL =================
 install_paymenter() {
     log "Paymenter downloaden..."
     rm -rf /var/www/paymenter
     mkdir -p /var/www/paymenter
     cd /var/www/paymenter
     curl -Lo paymenter.tar.gz https://github.com/paymenter/paymenter/releases/latest/download/paymenter.tar.gz
-    tar -xzvf paymenter.tar.gz
+    tar -xzf paymenter.tar.gz
     chmod -R 755 storage/* bootstrap/cache/
-    success "Paymenter is gedownload."
+    success "Paymenter geïnstalleerd."
 }
 
 # ================= NGINX CONFIG =================
@@ -79,9 +90,6 @@ server {
     server_name $DOMAIN;
     root /var/www/paymenter/public;
     
-    add_header X-Frame-Options "SAMEORIGIN";
-    add_header X-Content-Type-Options "nosniff";
-
     index index.php;
     charset utf-8;
 
@@ -96,18 +104,17 @@ server {
         fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
-        fastcgi_hide_header X-Powered-By;
     }
 }
 EOF
     ln -sf /etc/nginx/sites-available/paymenter.conf /etc/nginx/sites-enabled/
     systemctl restart nginx
-    success "Nginx geconfigureerd."
+    success "Nginx config gemaakt."
 
-    log "SSL installeren met Certbot..."
+    log "SSL certificaat aanvragen..."
     apt -y install certbot python3-certbot-nginx
     certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$ADMIN_EMAIL"
-    success "SSL certificaat geïnstalleerd."
+    success "SSL actief."
 }
 
 # ================= CONFIG PAYMENTER =================
@@ -119,22 +126,24 @@ configure_paymenter() {
     php artisan key:generate --force
     php artisan storage:link
 
+    sed -i "s/DB_DATABASE=.*/DB_DATABASE=paymenter/" .env
+    sed -i "s/DB_USERNAME=.*/DB_USERNAME=paymenter/" .env
     sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASSWORD}/" .env
 
     php artisan migrate --force --seed
     php artisan db:seed --class=CustomPropertySeeder
     php artisan app:init
     chown -R www-data:www-data /var/www/paymenter/*
-    success "Paymenter configuratie afgerond."
+    success "Paymenter geconfigureerd."
 }
 
-# ================= CRONJOB + QUEUE =================
+# ================= CRONJOB & QUEUE =================
 setup_cron_and_queue() {
-    log "Cronjob toevoegen..."
+    log "Cronjob instellen..."
     (crontab -l 2>/dev/null; echo "* * * * * php /var/www/paymenter/artisan schedule:run >> /dev/null 2>&1") | crontab -
-    success "Cronjob ingesteld."
+    success "Cronjob toegevoegd."
 
-    log "Queue service maken..."
+    log "Queue worker service maken..."
     cat <<EOF > /etc/systemd/system/paymenter.service
 [Unit]
 Description=Paymenter Queue Worker
@@ -144,17 +153,14 @@ User=www-data
 Group=www-data
 Restart=always
 ExecStart=/usr/bin/php /var/www/paymenter/artisan queue:work
-StartLimitInterval=180
-StartLimitBurst=30
 RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
     systemctl enable --now paymenter.service
     systemctl enable --now redis-server
-    success "Queue worker & Redis actief."
+    success "Queue worker actief."
 }
 
 # ================= CREATE ADMIN =================
@@ -178,5 +184,6 @@ configure_nginx
 configure_paymenter
 setup_cron_and_queue
 create_first_user
-success "Paymenter installatie compleet!"
-echo "Bezoek: https://$DOMAIN"
+
+success "✅ Paymenter installatie compleet!"
+echo "Bezoek nu: https://$DOMAIN"
