@@ -119,8 +119,6 @@ configure_paymenter() {
     php artisan key:generate --force
     php artisan storage:link
 
-    sed -i "s/DB_DATABASE=.*/DB_DATABASE=paymenter/" .env
-    sed -i "s/DB_USERNAME=.*/DB_USERNAME=paymenter/" .env
     sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASSWORD}/" .env
 
     php artisan migrate --force --seed
