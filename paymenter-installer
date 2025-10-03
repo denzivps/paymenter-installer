@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
 # Kleuren
 GREEN="\e[32m"
@@ -14,16 +14,42 @@ warn() { echo -e "${YELLOW}[WARN]${RESET} $1"; }
 error() { echo -e "${RED}[ERROR]${RESET} $1"; }
 
 # ================= INPUT =================
-echo "Welkom bij de Paymenter installer!"
+echo "-----------------------------------"
+echo " Welkom bij de Paymenter installer "
 echo "-----------------------------------"
 
-read -p "Database wachtwoord voor Paymenter: " DB_PASSWORD
-read -p "Domeinnaam (bijv. paymenter.example.com): " DOMAIN
-read -p "Admin voornaam: " ADMIN_FIRST
-read -p "Admin achternaam: " ADMIN_LAST
-read -p "Admin e-mail: " ADMIN_EMAIL
-read -sp "Admin wachtwoord: " ADMIN_PASS
+# Vraag alleen als variabelen niet al via ENV gezet zijn
+if [ -z "${DB_PASSWORD:-}" ]; then
+    read -p "Database wachtwoord voor Paymenter: " DB_PASSWORD
+fi
+
+if [ -z "${DOMAIN:-}" ]; then
+    read -p "Domeinnaam (bijv. paymenter.example.com): " DOMAIN
+fi
+
+if [ -z "${ADMIN_FIRST:-}" ]; then
+    read -p "Admin voornaam: " ADMIN_FIRST
+fi
+
+if [ -z "${ADMIN_LAST:-}" ]; then
+    read -p "Admin achternaam: " ADMIN_LAST
+fi
+
+if [ -z "${ADMIN_EMAIL:-}" ]; then
+    read -p "Admin e-mail: " ADMIN_EMAIL
+fi
+
+if [ -z "${ADMIN_PASS:-}" ]; then
+    read -sp "Admin wachtwoord: " ADMIN_PASS
+    echo ""
+fi
+
 echo ""
+log "Configuratie:"
+echo "  Domein: $DOMAIN"
+echo "  Database user: paymenter"
+echo "  Database naam: paymenter"
+echo "  Admin: $ADMIN_FIRST $ADMIN_LAST <$ADMIN_EMAIL>"
 
 # ================= DEPENDENCIES =================
 install_dependencies() {
@@ -126,7 +152,7 @@ configure_paymenter() {
     php artisan key:generate --force
     php artisan storage:link
 
-    # Alleen DB_PASSWORD instellen, database en username staan standaard goed
+    # Alleen DB_PASSWORD instellen
     if grep -q "^DB_PASSWORD=" .env; then
         sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=$DB_PASSWORD|" .env
     else
